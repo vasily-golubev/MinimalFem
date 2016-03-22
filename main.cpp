@@ -39,8 +39,13 @@ struct Element
 {
 	void CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eigen::Triplet<float> >& triplets);
 
+#ifdef RECT
+	Eigen::Matrix<float, 3, 8> B;
+	int nodesIds[4];
+#else
 	Eigen::Matrix<float, 3, 6> B;
 	int nodesIds[3];
+#endif
 };
 
 struct Constraint
@@ -64,6 +69,57 @@ std::vector< Constraint >	constraints;
 
 void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eigen::Triplet<float> >& triplets)
 {
+#ifdef RECT
+	Eigen::Vector4f x, y;
+	x << nodesX[nodesIds[0]], nodesX[nodesIds[1]], nodesX[nodesIds[2]], nodesX[nodesIds[3]];
+	y << nodesY[nodesIds[0]], nodesY[nodesIds[1]], nodesY[nodesIds[2]], nodesY[nodesIds[3]];
+
+	Eigen::Matrix4f C;
+	C << x, Eigen::Vector4f(x(0) * y(0), x(1) * y(1), x(2) * y(2), x(3) * y(3)), y, Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f);
+
+	Eigen::Matrix4f IC = C.inverse();
+
+	// FIXME Integral with 4 points using wikipedia
+	/* Order of vertex in rectangle
+	  3-------------2
+	  |		|
+	  |		|
+	  0-------------1
+	*/
+	Eigen::Matrix<float, 8, 8> K;
+	K.setZero();
+	for (int ind = 0; ind < 4; ind++) {
+		float coordX = x(ind);
+		float coordY = y(ind);
+		for (int i = 0; i < 4; i++)
+		{
+			B(0, 2 * i + 0) = IC(0, i) + coordY * IC(1, i);
+			B(0, 2 * i + 1) = 0.0f;
+			B(1, 2 * i + 0) = 0.0f;
+			B(1, 2 * i + 1) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 0) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 1) = IC(0, i) + coordY * IC(1, i);
+		}
+		K += B.transpose() * D * B;
+	}
+	K = 0.25f * 0.25f * (x(1) - x(0)) * (y(2) - y(1)) * K;
+	for (int i = 0; i < 4; i++)
+	{
+		for (int j = 0; j < 4; j++)
+		{
+			// FIXME If we need to add smth like trplt13, etc?
+			Eigen::Triplet<float> trplt11(2 * nodesIds[i] + 0, 2 * nodesIds[j] + 0, K(2 * i + 0, 2 * j + 0));
+			Eigen::Triplet<float> trplt12(2 * nodesIds[i] + 0, 2 * nodesIds[j] + 1, K(2 * i + 0, 2 * j + 1));
+			Eigen::Triplet<float> trplt21(2 * nodesIds[i] + 1, 2 * nodesIds[j] + 0, K(2 * i + 1, 2 * j + 0));
+			Eigen::Triplet<float> trplt22(2 * nodesIds[i] + 1, 2 * nodesIds[j] + 1, K(2 * i + 1, 2 * j + 1));
+
+			triplets.push_back(trplt11);
+			triplets.push_back(trplt12);
+			triplets.push_back(trplt21);
+			triplets.push_back(trplt22);
+		}
+	}
+#else
 	Eigen::Vector3f x, y;
 	x << nodesX[nodesIds[0]], nodesX[nodesIds[1]], nodesX[nodesIds[2]];
 	y << nodesY[nodesIds[0]], nodesY[nodesIds[1]], nodesY[nodesIds[2]];
@@ -83,7 +139,6 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 		B(2, 2 * i + 1) = IC(1, i);
 	}
 	Eigen::Matrix<float, 6, 6> K = B.transpose() * D * B * C.determinant() / 2.0f;
-
 	for (int i = 0; i < 3; i++)
 	{
 		for (int j = 0; j < 3; j++)
@@ -99,6 +154,7 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 			triplets.push_back(trplt22);
 		}
 	}
+#endif
 }
 
 void SetConstraints(Eigen::SparseMatrix<float>::InnerIterator& it, int index)
@@ -174,7 +230,11 @@ int main(int argc, char *argv[])
 	for (int i = 0; i < elementCount; ++i)
 	{
 		Element element;
+#ifdef RECT
+		infile >> element.nodesIds[0] >> element.nodesIds[1] >> element.nodesIds[2] >> element.nodesIds[3];
+#else
 		infile >> element.nodesIds[0] >> element.nodesIds[1] >> element.nodesIds[2];
+#endif
 		elements.push_back(element);
 	}
 
@@ -204,7 +264,7 @@ int main(int argc, char *argv[])
 		loads[2 * node + 0] = x;
 		loads[2 * node + 1] = y;
 	}
-	
+
 	std::vector<Eigen::Triplet<float> > triplets;
 	for (std::vector<Element>::iterator it = elements.begin(); it != elements.end(); ++it)
 	{
@@ -224,10 +284,18 @@ int main(int argc, char *argv[])
 
 	for (std::vector<Element>::iterator it = elements.begin(); it != elements.end(); ++it)
 	{
+#ifdef RECT
+		Eigen::Matrix<float, 8, 1> delta;
+		delta << displacements.segment<2>(2 * it->nodesIds[0]),
+		         displacements.segment<2>(2 * it->nodesIds[1]),
+		         displacements.segment<2>(2 * it->nodesIds[2]),
+		         displacements.segment<2>(2 * it->nodesIds[3]);
+#else
 		Eigen::Matrix<float, 6, 1> delta;
 		delta << displacements.segment<2>(2 * it->nodesIds[0]),
 		         displacements.segment<2>(2 * it->nodesIds[1]),
 		         displacements.segment<2>(2 * it->nodesIds[2]);
+#endif
 
 		Eigen::Vector3f sigma = D * it->B * delta;
 		float sigma_mises = sqrt(sigma[0] * sigma[0] - sigma[0] * sigma[1] + sigma[1] * sigma[1] + 3.0f * sigma[2] * sigma[2]);
