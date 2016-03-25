@@ -35,6 +35,10 @@ SOFTWARE.*/
 #include <iostream>
 #include <fstream>
 
+#if defined (RECT) && defined (ANALYTICAL)
+#include <ginac/ginac.h>
+#endif
+
 struct Element
 {
 	void CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eigen::Triplet<float> >& triplets);
@@ -67,6 +71,94 @@ Eigen::VectorXf          	loads;
 std::vector< Element >   	elements;
 std::vector< Constraint >	constraints;
 
+Eigen::Matrix3f D;
+
+#if defined (RECT) && defined (ANALYTICAL)
+GiNaC::matrix g_D(3, 3);
+GiNaC::matrix g_K(8,8);
+GiNaC::symbol x("x"), y("y");
+GiNaC::symbol x_0("x0"), y_0("y0");
+GiNaC::symbol x_1("x1"), y_3("y3");
+GiNaC::symbol IC_0i[4] = {GiNaC::symbol("ic_00"),
+				GiNaC::symbol("ic_01"),
+				GiNaC::symbol("ic_02"),
+				GiNaC::symbol("ic_03")};
+GiNaC::symbol IC_1i[4] = {GiNaC::symbol("ic_10"),
+				GiNaC::symbol("ic_11"),
+				GiNaC::symbol("ic_12"),
+				GiNaC::symbol("ic_13")};
+GiNaC::symbol IC_2i[4] = {GiNaC::symbol("ic_20"),
+				GiNaC::symbol("ic_21"),
+				GiNaC::symbol("ic_22"),
+				GiNaC::symbol("ic_23")};
+#endif
+
+#if defined (RECT) && defined (ANALYTICAL)
+void PrecalculateIntegrals() {
+	GiNaC::matrix g_B(3, 8);
+	for (int i = 0; i < 3; i++)
+		for (int j = 0; j < 8; j++)
+			g_B(i, j) = 0.0f;
+	for (int i = 0; i < 4; i++) {
+		g_B(0, 2 * i  + 0) = IC_0i[i] + y * IC_1i[i];
+		g_B(0, 2 * i + 1) = 0.0;
+		g_B(1, 2 * i + 0) = 0.0;
+		g_B(1, 2 * i + 1) = IC_2i[i] + x * IC_1i[i];
+		g_B(2, 2 * i + 0) = IC_2i[i] + x * IC_1i[i];
+		g_B(2, 2 * i + 1) = IC_0i[i] + y * IC_1i[i];
+	}
+
+	g_K = (g_B.transpose()).mul(g_D);
+	g_K = g_K.mul(g_B);
+	for (int i = 0; i < 8; i++)
+		for (int j = 0; j < 8; j++) {
+			GiNaC::integral ex = GiNaC::integral(x, x_0, x_1, g_K(i, j));
+			ex = GiNaC::integral(y, y_0, y_3, ex.eval_integ());
+			g_K(i, j) = ex.eval_integ();
+		}
+}
+#endif
+
+#if defined (RECT) && defined (ANALYTICAL)
+void IntegrateRect(Eigen::Matrix4f &IC, Eigen::Vector4f &vx, Eigen::Vector4f &vy, std::vector<Eigen::Triplet<float> >& triplets, int nodesIds[])
+{
+	GiNaC::lst data(IC_0i[0] == IC(0, 0),
+			IC_0i[1] == IC(0, 1),
+			IC_0i[2] == IC(0, 2),
+			IC_0i[3] == IC(0, 3),
+			IC_1i[0] == IC(1, 0),
+			IC_1i[1] == IC(1, 1),
+			IC_1i[2] == IC(1, 2),
+			IC_1i[3] == IC(1, 3),
+			IC_2i[0] == IC(2, 0),
+			IC_2i[1] == IC(2, 1),
+			IC_2i[2] == IC(2, 2),
+			IC_2i[3] == IC(2, 3),
+			x_0 == vx(0),
+			x_1 == vx(1),
+			y_0 == vy(0),
+			y_3 == vy(3)
+			);
+
+	for (int i = 0; i < 4; i++)
+	{
+		for (int j = 0; j < 4; j++)
+		{
+			// FIXME If we need to add smth like trplt13, etc?
+			Eigen::Triplet<float> trplt11(2 * nodesIds[i] + 0, 2 * nodesIds[j] + 0, GiNaC::ex_to<GiNaC::numeric>((g_K(2 * i + 0, 2 * j + 0).subs(data))).to_double());
+			Eigen::Triplet<float> trplt12(2 * nodesIds[i] + 0, 2 * nodesIds[j] + 1, GiNaC::ex_to<GiNaC::numeric>((g_K(2 * i + 0, 2 * j + 1).subs(data))).to_double());
+			Eigen::Triplet<float> trplt21(2 * nodesIds[i] + 1, 2 * nodesIds[j] + 0, GiNaC::ex_to<GiNaC::numeric>((g_K(2 * i + 1, 2 * j + 0).subs(data))).to_double());
+			Eigen::Triplet<float> trplt22(2 * nodesIds[i] + 1, 2 * nodesIds[j] + 1, GiNaC::ex_to<GiNaC::numeric>((g_K(2 * i + 1, 2 * j + 1).subs(data))).to_double());
+
+			triplets.push_back(trplt11);
+			triplets.push_back(trplt12);
+			triplets.push_back(trplt21);
+			triplets.push_back(trplt22);
+		}
+	}
+}
+#endif
+
 void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eigen::Triplet<float> >& triplets)
 {
 #ifdef RECT
@@ -78,7 +170,9 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 	C << x, Eigen::Vector4f(x(0) * y(0), x(1) * y(1), x(2) * y(2), x(3) * y(3)), y, Eigen::Vector4f(1.0f, 1.0f, 1.0f, 1.0f);
 
 	Eigen::Matrix4f IC = C.inverse();
-
+#ifdef ANALYTICAL
+	IntegrateRect(IC, x, y, triplets, nodesIds);
+#else
 	// FIXME Integral with 4 points using wikipedia
 	/* Order of vertex in rectangle
 	  3-------------2
@@ -119,6 +213,7 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 			triplets.push_back(trplt22);
 		}
 	}
+#endif
 #else
 	Eigen::Vector3f x, y;
 	x << nodesX[nodesIds[0]], nodesX[nodesIds[1]], nodesX[nodesIds[2]];
@@ -207,13 +302,22 @@ int main(int argc, char *argv[])
 	float poissonRatio, youngModulus;
 	infile >> poissonRatio >> youngModulus;
 
-	Eigen::Matrix3f D;
 	D <<
 		1.0f,        	poissonRatio,	0.0f,
 		poissonRatio,	1.0,         	0.0f,
 		0.0f,        	0.0f,        	(1.0f - poissonRatio) / 2.0f;
 
 	D *= youngModulus / (1.0f - pow(poissonRatio, 2.0f));
+
+#if defined (RECT) && defined (ANALYTICAL)
+	g_D =
+		1.0f,        	poissonRatio,	0.0f,
+		poissonRatio,	1.0,         	0.0f,
+		0.0f,        	0.0f,        	(1.0f - poissonRatio) / 2.0f;
+
+	g_D = g_D.mul_scalar(youngModulus / (1.0f - pow(poissonRatio, 2.0f)));
+	PrecalculateIntegrals();
+#endif
 
 	infile >> nodesCount;
 	nodesX.resize(nodesCount);
@@ -297,10 +401,15 @@ int main(int argc, char *argv[])
 		         displacements.segment<2>(2 * it->nodesIds[2]);
 #endif
 
+#if defined (RECT) && defined (ANALYTICAL)
+		// FIXME Now B is not constant in cell, how to estimate?
+		outfile << 0.0f << std::endl;
+#else
 		Eigen::Vector3f sigma = D * it->B * delta;
 		float sigma_mises = sqrt(sigma[0] * sigma[0] - sigma[0] * sigma[1] + sigma[1] * sigma[1] + 3.0f * sigma[2] * sigma[2]);
 
 		outfile << sigma_mises << std::endl;
+#endif
 	}
 	return 0;
 }
