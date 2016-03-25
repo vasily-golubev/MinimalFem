@@ -173,6 +173,64 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 #ifdef ANALYTICAL
 	IntegrateRect(IC, x, y, triplets, nodesIds);
 #else
+	Eigen::Matrix<float, 8, 8> K;
+	K.setZero();
+#ifdef CURVE
+	// FIXME Integral with 2 triangels and 3 points using wikipedia
+	/* Order of vertex in non-rectangle
+	  3-----2
+	  | \	|
+	  |   \	|
+	  0-----1
+	*/
+	Eigen::Matrix3f L;
+	Eigen::Matrix<float, 8, 8> K1;
+	K1.setZero();
+	// Triangle 1-2-3
+	L << x(1), x(2), x(3),
+		y(1), y(2), y(3),
+		1.0f, 1.0f, 1.0f;
+	for (int ind = 1; ind < 4; ind++) {
+		float coordX = x(ind);
+		float coordY = y(ind);
+		for (int i = 0; i < 4; i++)
+		{
+			B(0, 2 * i + 0) = IC(0, i) + coordY * IC(1, i);
+			B(0, 2 * i + 1) = 0.0f;
+			B(1, 2 * i + 0) = 0.0f;
+			B(1, 2 * i + 1) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 0) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 1) = IC(0, i) + coordY * IC(1, i);
+		}
+		K1 += B.transpose() * D * B;
+	}
+	K1 = K1 * 1.0f / 6.0f * L.determinant();
+	// Triangle 0-1-3
+	Eigen::Matrix<float, 8, 8> K2;
+	K2.setZero();
+	L << x(0), x(1), x(3),
+		y(0), y(1), y(3),
+		1.0f, 1.0f, 1.0f;
+	for (int ind = 0; ind < 3; ind++) {
+		if (ind == 2)
+			ind = 3;
+		float coordX = x(ind);
+		float coordY = y(ind);
+		for (int i = 0; i < 4; i++)
+		{
+			B(0, 2 * i + 0) = IC(0, i) + coordY * IC(1, i);
+			B(0, 2 * i + 1) = 0.0f;
+			B(1, 2 * i + 0) = 0.0f;
+			B(1, 2 * i + 1) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 0) = IC(2, i) + coordX * IC(1, i);
+			B(2, 2 * i + 1) = IC(0, i) + coordY * IC(1, i);
+		}
+		K2 += B.transpose() * D * B;
+	}
+	K2 = K2 * 1.0f / 6.0f * L.determinant();
+
+	K = K1 + K2;
+#else
 	// FIXME Integral with 4 points using wikipedia
 	/* Order of vertex in rectangle
 	  3-------------2
@@ -180,8 +238,6 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 	  |		|
 	  0-------------1
 	*/
-	Eigen::Matrix<float, 8, 8> K;
-	K.setZero();
 	for (int ind = 0; ind < 4; ind++) {
 		float coordX = x(ind);
 		float coordY = y(ind);
@@ -197,6 +253,7 @@ void Element::CalculateStiffnessMatrix(const Eigen::Matrix3f& D, std::vector<Eig
 		K += B.transpose() * D * B;
 	}
 	K = 0.25f * 0.25f * (x(1) - x(0)) * (y(2) - y(1)) * K;
+#endif
 	for (int i = 0; i < 4; i++)
 	{
 		for (int j = 0; j < 4; j++)
